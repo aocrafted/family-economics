@@ -1,0 +1,919 @@
+---
+title: "diff-in-diffs"
+format: html
+editor: visual
+---
+
+# load packages
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(tigris)
+library(broom)
+library(fixest)
+library(did)
+library(gt)
+library(zoo)
+library(car)
+```
+
+# load data
+
+```{r}
+load("data/final_data.RData")
+```
+
+```{r}
+options(scipen = 999)
+```
+
+# modify data
+
+```{r}
+variables_to_calculate <- c("gdp",
+  "tot_pop", "poverty_percent", "average_income_total",
+  "white_rate", "black_rate", "native_rate",
+  "asian_islander_rate", "hispanic_rate", "income_gap_w_to_m"
+)
+
+
+did_data_2007 <- 
+  final_data |> 
+  mutate(
+    treated = ifelse(state == "NY", 1, 0),  # Treated (1 if NY, 0 if MA|PA)
+    post = ifelse(year >= 2010, 1, 0),      # Post-treatment (1 if year >= 2010)
+    treat_year = ifelse(state == "NY", 2010, 0),
+    did = treated * post,                    # Interaction term for DiD,
+    # limit to counties with multiple data points to ensure reporting from the courts
+    # just replace with NA instead of filter for DiD panel requirement
+    total_divorce = ifelse(total_divorce <= 1, NA, total_divorce),
+    divorce_rate = ifelse(total_divorce <= 1, NA, divorce_rate),
+    county_id = paste(county, state, sep = ", "),
+    log_pop = log(tot_pop)
+  ) |> 
+  mutate(across(
+      all_of(variables_to_calculate),
+      ~ ((. - first(.)) / first(.)) * 100,
+      .names = "{.col}_rate_2007"
+    ))
+
+did_data_2007 <-
+  did_data_2007 |>
+  group_by(county_id) |>
+  arrange(year) |> 
+  # fill Oneida 2008
+  mutate(divorce_rate = na.approx(divorce_rate, na.rm = FALSE),
+         # num of divorce per 1k
+         divorce_rate = divorce_rate *1000, 
+         cumulative_poverty_change = poverty_percent - first(poverty_percent),
+    cumulative_income_change = average_income_total - first(average_income_total))  |> 
+  filter(year >= 2007
+         # Cameron and Potter: high divorce outliers due to cheap fees
+         # Dukes: due to NA
+        , !(county %in% c("Cameron", "Potter", "Dukes"))
+        ) |> 
+  ungroup()
+```
+
+# simple visualization
+
+```{r}
+# scatterplot
+scatter_data <-
+  did_data_2007
+
+ggplot(scatter_data, aes(x = year, y = divorce_rate, color = state)) +
+  geom_point() +
+  scale_y_continuous(transform = "log10")
+```
+
+```{r}
+# plot avg divorce rate by state
+state_plot <- did_data_2007 |> 
+  # filter(state != "MA") |> 
+  group_by(state, year) |> 
+  summarize(total_pop = sum(tot_pop),
+            group_total_divorce = sum(total_divorce, na.rm = TRUE),
+            mean_divorce_rate = 1000 * group_total_divorce / total_pop,
+            .groups = "drop")
+
+
+ggplot(state_plot, aes(x = year, y = mean_divorce_rate, group = state, color = state)) +
+  geom_line(aes()) + 
+  geom_vline(xintercept = 2010) +
+  theme_classic() +
+  labs(color = "State", x = "Year", y = "Mean Divorce Rate")
+```
+
+```{r}
+# plot avg divorce rate by treated (NY) vs non-treated(MA, PA)
+treat_plot <- did_data_2007 |> 
+  group_by(treated, year) |> 
+  summarize(total_pop = sum(tot_pop),
+            group_total_divorce = sum(total_divorce, na.rm = TRUE),
+            mean_divorce_rate = 1000 * group_total_divorce / total_pop,
+            .groups = "drop")
+
+
+ggplot(treat_plot, aes(x = year, y = mean_divorce_rate, group = treated, color = factor(treated, labels = c("Not treated (MA, PA)", "Treated (NY)")))) +
+  geom_line(aes()) + 
+  geom_vline(xintercept = 2010) +
+  labs(color = "Groups", x = "Year", y = "Divorces per 1,000 residents") +
+  theme_classic()
+```
+
+# map
+
+```{r}
+all_states <- states(year = 2020, class = "sf")
+
+selected_states <- all_states |> 
+  filter(STUSPS %in% c("NY", "PA", "MA"))
+# change crs for state
+selected_states <- st_transform(selected_states, crs = 4326)
+```
+
+```{r}
+# create county level map data
+ny_counties <- counties(state = "NY", year = 2020, class = "sf")
+pa_counties <- counties(state = "PA", year = 2020, class = "sf")
+ma_counties <- counties(state = "MA", year = 2020, class = "sf")
+
+# combine states
+selected_counties <- bind_rows(ny_counties, pa_counties, ma_counties)
+
+# change crs
+selected_counties <- st_transform(selected_counties, crs = 4326) |> 
+  mutate(
+    state = case_when(STATEFP == "36" ~ "NY",
+                      STATEFP == "42" ~ "PA",
+                      STATEFP == "25" ~ "MA"),
+    NAME = str_remove_all(NAME, "\\."))
+```
+
+```{r}
+# calculate change in divorce rate between 2005 and 2015
+county_plot <- 
+  did_data_2007 |> 
+  select(state, county, year, divorce_rate, poverty_percent) |>
+  filter(year %in% c(2007, 2015)) |> 
+  group_by(state, county) |>
+  summarise(divorce_rate_before = mean(divorce_rate[year == 2007], na.rm = TRUE),
+    divorce_rate_after = mean(divorce_rate[year == 2015], na.rm = TRUE),
+    diff_change_divorce_rate = divorce_rate_after - divorce_rate_before,
+    ratio_change_divorce_rate = divorce_rate_after/divorce_rate_before)
+
+# add divorce rate
+change_county <-
+  selected_counties |> 
+  left_join(county_plot, join_by(state == state,
+                                 NAME == county))
+
+## Cameron has high divorce rate due to low fee?
+```
+
+```{r}
+# change in divorce rate on map
+ggplot(data = change_county) +
+  geom_sf(aes(fill = diff_change_divorce_rate), color = "white") +
+  geom_sf(data = selected_states, fill = NA, color = "black", size = 2) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limits = c(-2, 2),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  labs(
+    caption = "Data Source: Vital Statistics",
+    fill = "Change in divorces \n per 1000 residents"
+  )
+
+```
+
+```{r}
+# change in ratio
+ggplot(data = change_county) +
+  geom_sf(aes(fill = ratio_change_divorce_rate), color = "white") +
+  geom_sf(data = selected_states, fill = NA, color = "black", size = 2) +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 1,
+    limits = c(0.5, 2),
+    oob = scales::squish
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Change in Divorce Rate between 2007-2015 by Counties",
+    caption = "Data Source: Vital Statistics"
+  )
+
+```
+
+# DiD data
+
+```{r}
+reg_data <- 
+  did_data_2007 |> 
+  filter(year != 2010) |>
+  mutate(county_id = dplyr::dense_rank(county_id))
+```
+
+# controls
+
+```{r}
+# tot_pop +
+# poverty_percent +
+# average_income_total + 
+# income_gap_w_to_m +
+# white_rate + 
+# black_rate + 
+# native_rate + 
+# asian_islander_rate +
+# hispanic_rate + 
+# pct_less_than_high_school +
+# pct_only_high_school +
+# pct_some_college_or_associate
+```
+
+```{r}
+# descriptive statistics
+summary(reg_data[, c(
+  "divorce_rate",
+  "gdp",
+  "tot_pop",
+  "log_pop", 
+  "poverty_percent",
+  "average_income_total",
+  "income_gap_w_to_m",
+  "white_rate",
+  "black_rate",
+  "native_rate",
+  "asian_islander_rate",
+  "hispanic_rate",
+  "pct_less_than_high_school",
+  "pct_only_high_school",
+  "pct_some_college_or_associate",
+  "pct_bachelors_or_higher",
+  "income_gap_w_to_m_rate_2007"   
+)])
+
+```
+
+```{r}
+# 相関行列を計算
+cor_matrix <- cor(reg_data[, c(
+  "divorce_rate",
+  "gdp",
+   "tot_pop",
+  "log_pop", 
+  "poverty_percent",
+  "average_income_total",
+  "income_gap_w_to_m",
+  "white_rate",
+  "black_rate",
+  "native_rate",
+  "asian_islander_rate",
+  "hispanic_rate",
+  "pct_less_than_high_school",
+  "pct_only_high_school",
+  "pct_some_college_or_associate",
+  "pct_bachelors_or_higher",
+  "income_gap_w_to_m_rate_2007"   
+)], use = "complete.obs")  # 欠損値を無視
+
+# 相関行列を表示
+print(cor_matrix)
+
+```
+
+```{r}
+library(corrplot)
+
+# heatmap
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8, number.cex = 0.7, addCoef.col = "black")
+
+```
+
+```{r}
+# 貧困率の分布
+ggplot(reg_data, aes(x = poverty_percent)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Distribution of Poverty Rate", x = "Poverty Rate (%)", y = "Frequency")
+
+# average incomeの分布
+ggplot(reg_data, aes(x = average_income_total)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7)
+
+# income_gap
+ggplot(reg_data, aes(x = income_gap_w_to_m)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Distribution of Poverty Rate", x = "Poverty Rate (%)", y = "Frequency")
+
+# income_gap
+ggplot(reg_data, aes(x = log_pop)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  labs(title = "Distribution of Poverty Rate", x = "Poverty Rate (%)", y = "Frequency")
+
+
+```
+
+```{r}
+
+# 必要な変数を含むデータフレームの準備
+variables_to_plot <- c(
+    "divorce_rate",
+  "gdp",
+   "tot_pop",
+  "log_pop", 
+  "poverty_percent",
+  "average_income_total",
+  "income_gap_w_to_m",
+  "white_rate",
+  "black_rate",
+  "native_rate",
+  "asian_islander_rate",
+  "hispanic_rate"
+  
+)
+
+# 介入前後の平均を計算
+summary_data <- reg_data %>%
+  group_by(treated, post) %>%
+  summarise(across(all_of(variables_to_plot), mean, na.rm = TRUE)) %>%
+  pivot_longer(cols = -c(treated, post), names_to = "variable", values_to = "value")
+
+# プロット
+ggplot(summary_data, aes(x = factor(post), y = value, color = factor(treated), group = factor(treated))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Changes Before and After Intervention",
+    x = "Post (0 = Pre-intervention, 1 = Post-intervention)",
+    y = "Value",
+    color = "Treated (1 = Treated Group)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# 差分を計算
+reg_data_diff <- reg_data %>%
+  group_by(county_id) %>%
+  summarise(
+    across(
+      all_of(variables_to_plot),
+      ~ mean(.x[post == 1], na.rm = TRUE) - mean(.x[post == 0], na.rm = TRUE),
+      .names = "{.col}_diff"
+    ),
+    treated = first(treated)
+  )
+
+# 長形式に変換
+reg_data_diff_long <- reg_data_diff %>%
+  pivot_longer(cols = -treated, names_to = "variable", values_to = "value")
+
+
+# 密度プロットを作成
+ggplot(reg_data_diff_long, aes(x = value, fill = factor(treated))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(
+    title = "Distribution of Changes (Pre vs Post)",
+    x = "Change Value",
+    y = "Density",
+    fill = "Treated (1 = Treated Group)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# 平均値を年次ごとに計算
+event_study_data <- reg_data %>%
+  group_by(year, treated) %>%
+  summarise(across(all_of(variables_to_plot), mean, na.rm = TRUE)) %>%
+  pivot_longer(cols = -c(year, treated), names_to = "variable", values_to = "value")
+
+# プロット
+ggplot(event_study_data, aes(x = year, y = value, color = factor(treated), group = factor(treated))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Event Study Plot: Changes Over Time",
+    x = "Year",
+    y = "Value",
+    color = "Treated (1 = Treated Group)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# 変化率を計算
+reg_data_rate <- reg_data %>%
+  group_by(county_id) %>%
+  summarise(
+    across(
+      all_of(variables_to_plot),
+      ~ ((mean(.x[post == 1], na.rm = TRUE) - mean(.x[post == 0], na.rm = TRUE)) / mean(.x[post == 0], na.rm = TRUE)) * 100,
+      .names = "{.col}_rate"
+    ),
+    treated = first(treated)
+  ) |> 
+  ungroup()
+
+# 長形式に変換
+reg_data_rate_long <- reg_data_rate %>%
+  pivot_longer(cols = -treated, names_to = "variable", values_to = "value") |> 
+  filter(variable != "county_id")
+
+# 平均変化率をプロット
+ggplot(reg_data_rate_long, aes(x = factor(treated), y = value, fill = factor(treated))) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Percentage Change Before and After Intervention",
+    x = "Treated (0 = Control Group, 1 = Treated Group)",
+    y = "Percentage Change",
+    fill = "Treated Group"
+  ) +
+  theme_minimal()
+
+# 密度プロットを作成
+ggplot(reg_data_rate_long, aes(x = value, fill = factor(treated))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(
+    title = "Distribution of Percentage Changes",
+    x = "Percentage Change",
+    y = "Density",
+    fill = "Treated Group"
+  ) +
+  theme_minimal()
+
+```
+
+# simple DiD models
+
+```{r}
+data_before <- reg_data |> 
+  filter(year < 2010) 
+  
+black <- feols(divorce_rate ~ gdp + poverty_percent + average_income_total +average_income_total
++ income_gap_w_to_m
++ tot_pop
++ black_rate 
++ native_rate
++ asian_islander_rate
++ hispanic_rate
++ pct_less_than_high_school
++ pct_only_high_school
++ pct_some_college_or_associate| county_id,
+               data = data_before,
+               cluster = ~ county_id)
+print(summary(black))
+```
+
+```{r}
+ggplot(data_before, aes(x = pct_less_than_high_school, y = divorce_rate)) +
+  geom_point()
+```
+
+```{r}
+did_0 <- feols(divorce_rate ~ treated + post + treated:post,
+               data = reg_data,
+               cluster = ~ county_id)
+summary(did_0)
+
+print(vif(did_0))
+```
+
+```{r}
+# poverty level interaction term
+did_1 <- feols(divorce_rate ~ treated + post + did +
+              poverty_percent
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_1)
+print(vif(did_1))
+```
+
+```{r}
+library(ggplot2)
+
+# 貧困率ごとの政策効果を計算
+reg_data$policy_effect <- coef(did_1)["did"] + coef(did_1)["did:poverty_percent"] * reg_data$poverty_percent
+
+# プロット
+ggplot(reg_data, aes(x = poverty_percent, y = policy_effect)) +
+  geom_line() +
+  labs(title = "Policy Effect by Poverty Level", x = "Poverty Percent", y = "Policy Effect")
+
+```
+
+```{r}
+# + education
+did_2 <- feols(divorce_rate ~ treated + post + did +
+              pct_less_than_high_school +
+              pct_only_high_school +
+              pct_some_college_or_associate
+
+              # average_income_total_rate_2007
+            
+
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_2)
+print(vif(did_2))
+```
+
+```{r}
+# change in racial proportion
+did_3 <- feols(divorce_rate ~ treated + post + did +
+                 black_rate_rate_2007 +
+                 native_rate_rate_2007 +
+                 asian_islander_rate_rate_2007 +
+                 hispanic_rate_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_3)
+print(vif(did_3))
+```
+
+```{r}
+# change in income
+did_4 <- feols(divorce_rate ~ treated + post + did +
+              average_income_total_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_4)
+print(vif(did_4))
+```
+
+```{r}
+did_5 <- feols(divorce_rate ~ treated + post + did +
+                 poverty_percent +
+                 pct_less_than_high_school +
+                 pct_only_high_school +
+                 pct_some_college_or_associate +
+                 black_rate_rate_2007 +
+                 native_rate_rate_2007 +
+                 asian_islander_rate_rate_2007 +
+                 hispanic_rate_rate_2007
+                  +
+                 average_income_total_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_5)
+print(vif(did_5))
+```
+
+# interaction term
+
+```{r}
+# poverty level interaction term
+did_x_1 <- feols(divorce_rate ~ treated + post + treated:post +
+              poverty_percent + treated:poverty_percent + post:poverty_percent +
+              treated:post:poverty_percent| county_id + year
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_1)
+print(vif(did_x_1))
+```
+
+```{r}
+# gdp 
+did_x_1 <- feols(divorce_rate ~ treated + post + did +
+              poverty_percent + treated:poverty_percent + post:poverty_percent +
+              did:poverty_percent + gdp_rate_2007| county_id 
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_1)
+print(vif(did_x_1))
+```
+
+```{r}
+# + education
+did_x_2 <- feols(divorce_rate ~ treated + post + did +
+              poverty_percent +
+              did:poverty_percent +
+              pct_less_than_high_school +
+              pct_only_high_school +
+              pct_some_college_or_associate,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_2)
+print(vif(did_x_2))
+```
+
+```{r}
+# change in racial proportion
+did_x_3 <- feols(divorce_rate ~ treated + post + did +
+                 poverty_percent +
+                 did:poverty_percent +
+                 black_rate_rate_2007 +
+                 native_rate_rate_2007 +
+                 asian_islander_rate_rate_2007 +
+                 hispanic_rate_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_3)
+print(vif(did_x_3))
+```
+
+```{r}
+# change in income
+did_x_4 <- feols(divorce_rate ~ treated + post + did +
+              poverty_percent +
+              did:poverty_percent +
+              average_income_total_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_4)
+print(vif(did_x_4))
+```
+
+```{r}
+did_x_5 <- feols(divorce_rate ~ treated + post + did +
+                 poverty_percent +
+                 did:poverty_percent +
+                 pct_less_than_high_school +
+                 pct_only_high_school +
+                 pct_some_college_or_associate +
+                 black_rate_rate_2007 +
+                 native_rate_rate_2007 +
+                 asian_islander_rate_rate_2007 +
+                 hispanic_rate_rate_2007
+                  +
+                 average_income_total_rate_2007
+            ,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_x_5)
+print(vif(did_x_5))
+```
+
+# fixed effects
+
+```{r}
+# county fixed effect
+did_fe_0 <- feols(divorce_rate ~ treated + post + treated:post | county_id,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_fe_0)
+print(vif(did_fe_0))
+```
+
+```{r}
+# year fixed effect
+did_fe_1 <- feols(divorce_rate ~ treated + post + treated:post | year,
+            data = reg_data,
+            cluster = ~ county_id)
+summary(did_fe_1)
+print(vif(did_fe_1))
+```
+
+```{r}
+# county and year fixed effects
+did_fe_2 <- feols(divorce_rate ~ treated + post + treated:post
+                  | county_id + year,
+                  cluster = ~ county_id,
+            data = reg_data)
+summary(did_fe_2)
+print(vif(did_fe_2))
+```
+
+```{r}
+did_fe_3 <- feols(divorce_rate ~ treated + post + did +
+                    poverty_percent +
+                    poverty_percent:did
+                  | county_id + year,
+                  cluster = ~ county_id,
+            data = reg_data)
+summary(did_fe_3)
+print(vif(did_fe_3))
+```
+
+# publishable table
+
+```{r}
+setFixest_dict(c(poverty_percent = "poverty rate"))
+```
+
+```{r}
+table <- etable(did_0, did_fe_0, did_fe_1, did_fe_2, did_x_1, signif.code = c("***"=0.01,"**"=0.05,"*"=0.1), tex = TRUE)
+
+print(table)
+
+```
+
+```{r}
+library(knitr)
+library(kableExtra)
+library(webshot)
+
+temp_file <- tempfile(fileext = ".html")
+save_kable(table, temp_file)
+
+# 画像ファイルとして保存
+output_image <- "table_image.png"
+webshot(temp_file, output_image, zoom = 2)
+```
+
+# event study
+
+```{r}
+event_study_fe <- feols(
+  divorce_rate ~ i(year, treated, ref = 2009) | county_id + year,  # 固定効果の指定
+  cluster = ~ county_id,  # クラスタ標準誤差
+  data = reg_data
+)
+summary(event_study_fe)
+
+etable(event_study_fe, tex= TRUE)
+```
+
+```{r}
+# 推定結果を取り出す
+coef_data <- broom::tidy(event_study_fe) %>%
+  filter(term != "(Intercept)") %>%  # 切片を除外
+  mutate(
+    year = str_extract(term, "(?<=year::)\\d+"),  # year::の後の数値を抽出
+    year = as.numeric(year)  # 数値に変換
+  )
+
+coef_data <- coef_data %>%
+  mutate(
+    pre_post = ifelse(year < 2010, "Before", "After")  # 条件で区分
+  ) |> 
+  add_row(
+    year = 2009,
+    estimate = 0,  # 基準年はゼロ
+    std.error = 0,  # 標準誤差もゼロ
+    pre_post = "Before"
+  )
+
+ggplot(coef_data, aes(x = year, y = estimate)) +
+  geom_line() +
+  geom_point(aes(color = pre_post)) +
+  geom_errorbar(aes(color = pre_post, ymin = estimate - 1.96 * std.error, ymax = estimate + 1.96 * std.error), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_vline(xintercept = 2010, linetype = "dotted") +
+  labs(
+    color = "",
+    x = "Year",
+    y = "Estimated Effect",
+    caption = "The intervention happened in 2010."
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# no control
+event_study_0 <- att_gt(
+  yname = "divorce_rate",  # outcome
+  tname = "year",          # time（post = 1）
+  idname = "county_id",
+  gname = "treat_year",       # year of the treatment. treated = 2010, not treated = 0
+  xformla = NULL,           # covariant（if none: ~ 1）
+  clustervars = "county_id",  # clustering unit
+  # panel = FALSE,  
+  data = reg_data          # data
+)
+summary(event_study_0)
+# print(vif(event_study_0))
+```
+
+```{r}
+did_results <- event_study_0$att
+
+```
+
+```{r}
+# event study plot
+ggdid(event_study_0)
+
+```
+
+```{r}
+# with a control
+event_study_1 <- att_gt(
+  yname = "divorce_rate",  # outcome
+  tname = "year",          # time（post = 1）
+  idname = "county_id",
+  gname = "treat_year",       # year of the treatment. treated = 2010, not treated = 0
+  xformla = ~ ,           # covariant（if none: ~ 1）
+  clustervars = "county_id",  # clustering unit
+  # panel = FALSE,  
+  data = reg_data          # data
+)
+summary(event_study_1)
+
+# poverty_percent +
+#   did:poverty_percent +
+  # pct_less_than_high_school +
+  # pct_only_high_school +
+  # pct_some_college_or_associate +
+#   black_rate_rate_2007 +
+#   native_rate_rate_2007 +
+#   asian_islander_rate_rate_2007 +
+#   hispanic_rate_rate_2007 +
+#   average_income_total_rate_2007
+```
+
+# divorce grounds
+
+```{r}
+grounds <- reg_data |> 
+  filter(state == "NY") |> 
+  group_by(state, year) |> 
+  summarise(cruelty = sum(cruelty),
+            abandonment = sum(abandonment),
+            imprisonment = sum(imprisonment),
+            adultery = sum(adultery),
+            after_legal_separation = sum(after_legal_separation),
+            after_separation_by_agreement = sum(after_separation_by_agreement),
+            ground_not_stated = sum(ground_not_stated))
+
+grounds$total_divorces <- rowSums(as.matrix(grounds[, 3:9]), na.rm = TRUE)
+
+grounds <-
+  grounds |> 
+  mutate(across(cruelty:ground_not_stated, ~ . / total_divorces, .names = "prop_{.col}"))
+
+print(grounds)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# データ準備
+grounds_long <- grounds %>%
+  pivot_longer(cols = cruelty:total_divorces, names_to = "reason", values_to = "count")
+
+# 時系列プロット
+ggplot(grounds_long, aes(x = year, y = count, color = reason)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = 2010, linetype = "dashed", color = "red") +
+  labs(
+    title = "Trends in Divorce Reasons Over Time",
+    x = "Year",
+    y = "Count",
+    color = "Reason"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(grounds_long, aes(x = year, y = variable, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  labs(
+    title = "Heatmap of Grounds Variables by Year",
+    x = "Year",
+    y = "Grounds",
+    fill = "Value"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+grounds_long_prop <- grounds %>%
+  pivot_longer(cols = starts_with("prop"), names_to = "reason", values_to = "proportion")
+
+grounds_long <- grounds %>%
+  pivot_longer(cols = cruelty:ground_not_stated, names_to = "variable", values_to = "value")
+
+ggplot(grounds_long_prop, aes(x = year, y = proportion, color = reason)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = 2010, linetype = "dashed", color = "red") +
+  labs(
+    title = "Proportional Trends in Divorce Reasons",
+    x = "Year",
+    y = "Proportion",
+    color = "Reason"
+  ) +
+  theme_minimal()
+```

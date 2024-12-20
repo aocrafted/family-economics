@@ -1,0 +1,325 @@
+---
+title: "penn_wrangle"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(tabulapdf)
+library(janitor)
+library(pdftools)
+```
+
+```{r}
+# pdf_dir <- file.path(getwd(), "raw_data")
+# 
+# # 2005-2010
+# year <- 2010
+# pdf_file <- file.path(pdf_dir, paste0("Marriage_Divorce_", year, ".pdf"))
+# 
+# table <- extract_tables(pdf_file, pages = 9) |>
+#   pluck(1) |>
+#   as_tibble(.name_repair = "minimal") |>
+#   clean_names() |>
+#   separate(
+#     col = x3,
+#     into = c("var1", "var2"),
+#     sep = " ") |>
+#   separate(
+#     col = duration_of_marriage_in_years,
+#     into = c("var3", "var4", "var5", "var6", "var7"),
+#     sep = " ") |>
+#   mutate(
+#     across(
+#       everything(),
+#       ~ ifelse(row_number() == 1 & (. == "" | is.na(.)), "x", .)))
+
+# col_names <- as.character(slice(table, 1))
+# table <-
+#   table |>
+#   set_names(col_names) |>
+#   clean_names() |>
+#   mutate(year = year,
+#          state = "PA") |>
+#   select(state,
+#          county = x,
+#          year,
+#          total_divorce = x_2,
+#          under_5 = under,
+#          x5_9,
+#          x10_14,
+#          x15_19,
+#          x20_24,
+#          x25_29,
+#          x30) |>
+#   slice(4:70) |>
+#   mutate(
+#     across(
+#     c(total_divorce, under_5, x5_9, x10_14, x15_19, x20_24, x25_29, x30),
+#     ~ str_replace_all(., ",", "") |> as.integer())
+#   )
+# 
+# 
+# 
+# View(table)
+```
+
+```{r}
+# pdf_dir <- file.path(getwd(), "raw_data")
+# 
+# # 2011
+# year <- 2011
+# pdf_file <- file.path(pdf_dir, paste0("Marriage_Divorce_", year, ".pdf"))
+# 
+# table <- extract_tables(pdf_file, pages = 9) |> 
+#   pluck(1) |> 
+#   as_tibble(.name_repair = "minimal") |> 
+#   clean_names() |> 
+#   separate(
+#     col = x3,
+#     into = c("var1", "var2"),
+#     sep = " ") |> 
+#   separate(
+#     col = duration_of_marriage_in_years, 
+#     into = c("var3", "var4", "var5", "var6", "var7"), 
+#     sep = " ") |> 
+#   mutate(
+#     across(
+#       everything(),
+#       ~ ifelse(row_number() == 1 & (. == "" | is.na(.)), "x", .)))
+# 
+# col_names <- as.character(slice(table, 1))
+# table <- 
+#   table |> 
+#   set_names(col_names) |> 
+#   clean_names() |> 
+#     mutate(year = year,
+#          state = "PA") |> 
+#   select(state,
+#          county = x,
+#          total_divorce = x_2,
+#          under_5 = under,
+#          x5_9,
+#          x10_14, 
+#          # x15_19
+#          x15_19 = x_6,
+#          # x20_24
+#          x20_24 = x_7,
+#          x25_29,
+#          x30) |> 
+#   slice(4:70) |> 
+#   mutate(
+#     across(
+#     c(total_divorce, under_5, x5_9, x10_14, x15_19, x20_24, x25_29, x30),
+#     ~ str_replace_all(., ",", "") |> as.integer())
+#   )
+#   
+#   
+# View(table)
+```
+
+```{r}
+# 
+# pdf_dir <- file.path(getwd(), "raw_data")
+# 
+# # 2012-2013
+# year <- 2012
+# pdf_file <- file.path(pdf_dir, paste0("Marriage_Divorce_", year, ".pdf"))
+# 
+# # pages = 10
+# table <- extract_tables(pdf_file, pages = 10) |> 
+#   pluck(1) |> 
+#   as_tibble(.name_repair = "minimal") |> 
+#   clean_names() |> 
+#   separate(
+#     col = x3,
+#     into = c("var1", "var2"),
+#     sep = " ") |> 
+#   separate(
+#     col = duration_of_marriage_in_years, 
+#     into = c("var3", "var4", "var5", "var6", "var7"), 
+#     sep = " ") |> 
+#   mutate(
+#     across(
+#       everything(),
+#       ~ ifelse(row_number() == 1 & (. == "" | is.na(.)), "x", .)))
+# 
+# col_names <- as.character(slice(table, 1))
+# table <- 
+#   table |> 
+#   set_names(col_names) |> 
+#   clean_names() |> 
+#     mutate(year = year,
+#          state = "PA") |> 
+#   select(state,
+#          county = x,
+#          total_divorce = x_2,
+#          under_5 = under,
+#          x5_9,
+#          x10_14, 
+#          # x15_19
+#          x15_19 = x_6,
+#          # x20_24
+#          x20_24 = x_7,
+#          x25_29,
+#          x30) |> 
+#   slice(4:70) |> 
+#   mutate(
+#     across(
+#     c(total_divorce, under_5, x5_9, x10_14, x15_19, x20_24, x25_29, x30),
+#     ~ str_replace_all(., ",", "") |> as.integer())
+#   )
+# 
+# View(table)
+```
+
+```{r}
+# 
+# pdf_dir <- file.path(getwd(), "raw_data")
+# 
+# # 2014-2015
+# year <- 2015
+# pdf_file <- file.path(pdf_dir, paste0("Marriage_Divorce_", year, ".pdf"))
+# 
+# # pages = 10
+# table <- extract_tables(pdf_file, pages = 10) |> 
+#   pluck(1) |> 
+#   as_tibble(.name_repair = "minimal") |> 
+#   clean_names() |> 
+#   separate(
+#     col = x3,
+#     into = c("var1", "var2"),
+#     sep = " ") |> 
+#   separate(
+#     col = duration_of_marriage_in_years, 
+#     into = c("var3", "var4", "var5", "var6", "var7"), 
+#     sep = " ") |> 
+#   mutate(
+#     across(
+#       everything(),
+#       ~ ifelse(row_number() == 1 & (. == "" | is.na(.)), "x", .)))
+# 
+# col_names <- as.character(slice(table, 1))
+# table <- 
+#   table |> 
+#   set_names(col_names) |> 
+#   clean_names() |> 
+#     mutate(year = year,
+#          state = "PA") |> 
+#   select(state,
+#          county = x,
+#          total_divorce = x_2,
+#          under_5 = under,
+#          x5_9,
+#          x10_14, 
+#          x15_19,
+#          x20_24,
+#          x25_29,
+#          x30) |> 
+#   slice(4:70) |> 
+#   mutate(
+#     across(
+#     c(total_divorce, under_5, x5_9, x10_14, x15_19, x20_24, x25_29, x30),
+#     ~ str_replace_all(., ",", "") |> as.integer())
+#   )
+# 
+# View(table)
+```
+
+```{r}
+
+# Define the PDF directory
+pdf_dir <- file.path(getwd(), "raw_data")
+
+# Initialize an empty list to store yearly data
+all_years_data <- list()
+
+# Loop through each year and process
+for (year in 2005:2015) {
+  # Set the file path
+  pdf_file <- file.path(pdf_dir, paste0("Marriage_Divorce_", year, ".pdf"))
+  
+  # Define the correct page
+  page <- ifelse(year %in% 2012:2015, 10, 9)
+  
+  # Extract table
+  table <- extract_tables(pdf_file, pages = page) |> 
+    pluck(1) |> 
+    as_tibble(.name_repair = "minimal") |> 
+    clean_names() |> 
+    separate(
+      col = x3,
+      into = c("var1", "var2"),
+      sep = " ",
+      fill = "right") |> 
+    separate(
+      col = duration_of_marriage_in_years, 
+      into = c("var3", "var4", "var5", "var6", "var7"), 
+      sep = " ",
+      fill = "right") |> 
+    mutate(
+      across(
+        everything(),
+        ~ ifelse(row_number() == 1 & (. == "" | is.na(.)), "x", .)))
+  
+  # Use the first row as column names
+  col_names <- as.character(slice(table, 1))
+  table <- 
+    table |> 
+    set_names(col_names) |> 
+    clean_names() |> 
+    mutate(year = year,
+           state = "PA") 
+  
+  # Adjust column selection based on year
+  if (year %in% 2011:2013) {
+    table <- table |>
+      select(
+        state,
+        county = x,
+        year,
+        total_divorce = x_2,
+        under_5 = under,
+        x5_9,
+        x10_14, 
+        x15_19 = x_6,
+        x20_24 = x_7,
+        x25_29,
+        x30)
+  } else {
+    table <- table |>
+      select(
+        state,
+        county = x,
+        year,
+        total_divorce = x_2,
+        under_5 = under,
+        x5_9,
+        x10_14, 
+        x15_19,
+        x20_24,
+        x25_29,
+        x30)
+  }
+  
+  # Filter and convert columns to integers
+  table <- table |>
+    slice(4:70) |> 
+    mutate(
+      across(
+        c(total_divorce, under_5, x5_9, x10_14, x15_19, x20_24, x25_29, x30),
+        ~ str_replace_all(., ",", "") |> as.integer())
+    )
+  
+  # Append the processed data to the list
+  all_years_data[[as.character(year)]] <- table
+}
+
+# Combine all years into a single dataframe
+divorce_pa <- bind_rows(all_years_data) |> 
+  mutate(x20_29 = x20_24 + x25_29) |> 
+  select(-x20_24, -x25_29)
+
+save(divorce_pa, file = "raw_data/divorce_pa.RData")
+```

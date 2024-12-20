@@ -1,0 +1,407 @@
+---
+title: "wrangle_divorce"
+format: html
+editor: visual
+---
+
+# setup
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(readr)
+library(janitor)
+library(broom)
+library(fixest)
+library(gt)
+```
+
+# load divorce data
+
+```{r}
+# ny divorce data
+load("raw_data/divorce_ny.RData")
+# ma divorce data
+load("raw_data/divorce_ma.RData")
+# pa divorce data
+load("raw_data/divorce_pa.RData")
+
+divorce <- bind_rows(divorce_ny, divorce_ma, divorce_pa)
+```
+
+# education attainment
+
+```{r}
+# education attainment
+education <- read_excel("raw_data/education.xlsx", skip = 3) |> 
+  clean_names() |> 
+  filter(state %in% c("NY", "MA", "PA"),
+        !(area_name %in% c("Massachusetts", "New York", "Pennsylvania"))) |> 
+  rename(county = area_name,
+         pct_less_than_high_school = percent_of_adults_with_less_than_a_high_school_diploma_2008_12,
+         pct_only_high_school = percent_of_adults_with_a_high_school_diploma_only_2008_12,
+         pct_some_college_or_associate = percent_of_adults_completing_some_college_or_associates_degree_2008_12,
+         pct_bachelors_or_higher = percent_of_adults_with_a_bachelors_degree_or_higher_2008_12
+         ) |> 
+  select(county, state, pct_less_than_high_school,
+         pct_only_high_school,
+         pct_some_college_or_associate,
+         pct_bachelors_or_higher) |> 
+  mutate(county = str_remove(county, " County"),
+         county = str_remove_all(county, "\\."))
+  
+
+```
+
+# county gdp
+
+```{r}
+# gdp
+gdp <- read_csv("raw_data/gdp.csv", skip = 3) |> 
+  clean_names() |> 
+  rename_with(~ str_replace(., "^x", "gdp_")) |> 
+  rename(county = geo_name) |> 
+  # choose real GDP
+  filter(description == "Real GDP (thousands of chained 2017 dollars)") |> 
+  mutate(state = str_extract(county, "(MA|NY|PA)"),
+         county = str_remove_all(county, ", (MA|NY|PA)"),
+         county = str_remove_all(county, "\\.")) |> 
+  select(state, county, starts_with("gdp")) |> 
+  pivot_longer(cols = starts_with("gdp"),
+               names_to = "year",
+               names_pattern = "gdp_(\\d+)",
+               names_transform = list(year = as.integer),
+               values_to = "gdp")
+```
+
+```{r}
+
+# # new york test
+# income_ny <-
+#   read_excel("raw_data/ny_2015.xlsx",
+#              sheet = 3,
+#              skip = 3) |>
+#   clean_names() |>
+#   rename(county = x1,
+#          sex = x2,
+#          number_taxpayers = total_c,
+#          taxable_income = total_8) |>
+#   select(county, sex, number_taxpayers, taxable_income) |>
+  # slice(4:189) |>  # this range changes by state
+#   fill(county, .direction = "down") |> 
+#   mutate(sex = replace_na(sex, "total"),
+#          sex = str_to_lower(sex)) |> 
+#   pivot_wider(
+#     names_from = sex,                   
+#     values_from = c(number_taxpayers, taxable_income), 
+#     names_glue = "{.value}_{sex}") |>
+#   mutate(across(
+#     -county,                              
+#     ~ str_remove_all(., ",") |> as.numeric())) |> 
+#   mutate(year = 2005,
+#          average_income_total = taxable_income_total/number_taxpayers_total *1000,
+#          average_income_men = taxable_income_men/number_taxpayers_men *1000,
+#          average_income_women = taxable_income_women/number_taxpayers_women *1000,
+#          income_gap_w_to_m = average_income_women/average_income_men,
+#          county = str_remove_all(county, "\\.")) |> 
+#   select(county, year, average_income_total, income_gap_w_to_m)
+
+```
+
+# taxable income
+
+```{r}
+#| message: false
+# income
+# file names
+states <- c("ny", "ma", "pa")
+years <- 2005:2015
+file_paths <- expand.grid(states, years) |> 
+  mutate(path = paste0("raw_data/", Var1, "_", Var2, ".xlsx")) |> 
+  pull(path)
+
+# define function
+process_income <- function(file_path) {
+  # extract year from file path
+  year <- as.numeric(str_extract(file_path, "\\d{4}"))
+  
+  # detect state from file path
+  state <- if (str_detect(file_path, "ny")) {
+    "NY"
+  } else if (str_detect(file_path, "ma")) {
+    "MA"
+  } else if (str_detect(file_path, "pa")) {
+    "PA"
+  } else {
+    stop("Unsupported file type")
+  }
+  
+  # detect whether it's "ma" or "ny"
+  slice_range <- if (str_detect(file_path, "ny")) {
+    4:189
+  } else if (str_detect(file_path, "ma")) {
+    4:45
+  } else if (str_detect(file_path, "pa")) {
+    4:204
+  } else {
+    stop("Unsupported file type")
+  }
+  
+  
+  read_excel(file_path,
+             sheet = 3,  
+             skip = 3) |>
+    clean_names() |> 
+    rename(
+      county = x1,
+      sex = x2,
+      number_taxpayers = total_c,
+      taxable_income = total_8
+    ) |> 
+    select(county, sex, number_taxpayers, taxable_income) |> 
+    slice(slice_range) |>  
+    fill(county, .direction = "down") |> 
+    mutate(
+      sex = replace_na(sex, "total"),
+      sex = str_to_lower(sex)
+    ) |> 
+    pivot_wider(
+      names_from = sex,                   
+      values_from = c(number_taxpayers, taxable_income), 
+      names_glue = "{.value}_{sex}"
+    ) |> 
+    mutate(across(
+      -county,                              
+      ~ str_remove_all(., ",") |> as.numeric())) |> 
+    mutate(
+      state = state,
+      year = year,
+      average_income_total = taxable_income_total / number_taxpayers_total * 1000,
+      average_income_men = taxable_income_men / number_taxpayers_men * 1000,
+      average_income_women = taxable_income_women / number_taxpayers_women * 1000,
+      income_gap_w_to_m = average_income_women / average_income_men,
+      county = str_remove_all(county, "\\.")
+    ) |> 
+    select(state, county, year, average_income_total, income_gap_w_to_m)
+}
+
+# apply process_file to all data
+income <- map_dfr(file_paths, process_income)
+```
+
+# poverty rate
+
+```{r}
+# poverty rate
+# poverty <- 
+#   read_excel("raw_data/est05all.xls",
+#              sheet = 1,
+#              skip = 2) |> 
+#   clean_names() |> 
+#   rename(state = postal,
+#          county = name,
+#          poverty_percent = poverty_percent_all_ages) |> 
+#   filter(state %in% c("NY", "MA"),
+#          !(county %in% c("Massachusetts", "New York"))) |> 
+#   mutate(poverty_percent = as.numeric(poverty_percent),
+#          county = str_remove(county, " County"),
+#          year = 2005) |> 
+#   select(state, county, poverty_percent)
+```
+
+```{r}
+#| message: false
+# poverty rate
+# Generate file names based on years
+years <- 2005:2015
+file_paths <- paste0("raw_data/est", substr(years, 3, 4), "all.xls")
+
+# Define a function to process individual files
+process_poverty <- function(file_path, year) {
+  # Determine the number of rows to skip based on the year
+  skip_rows <- if (year >= 2013) 3 else 2
+  
+  data <- read_excel(file_path, sheet = 1, skip = skip_rows) |> 
+    clean_names()
+  
+  # Rename `name` column to `county` if it exists
+  if ("name" %in% names(data)) {
+    data <- rename(data, county = name)
+  }
+  
+  # Rename `postal` or `postal_code` column to `state` if it exists
+  if ("postal" %in% names(data)) {
+    data <- rename(data, state = postal)
+  } else if ("postal_code" %in% names(data)) {
+    data <- rename(data, state = postal_code)
+  } else {
+    stop("Neither 'postal' nor 'postal_code' column found in the file")
+  }
+  
+  # Process the data
+  data |> 
+    rename(
+      poverty_percent = poverty_percent_all_ages
+    ) |> 
+    filter(
+      state %in% c("NY", "MA", "PA"), 
+      !(county %in% c("Massachusetts", "New York", "Pennsylvania")) 
+    ) |> 
+    mutate(
+      poverty_percent = as.numeric(poverty_percent), 
+      county = str_remove(county, " County"),
+      county = str_remove_all(county, "\\."),
+      county = str_replace_all(county, "Mc Kean", "McKean"),
+      year = year 
+    ) |> 
+    select(state, county, poverty_percent, year) 
+}
+
+# Apply the function to all files and bind the results
+poverty <- map2_dfr(file_paths, years, process_poverty)
+
+```
+
+# populaton and race
+
+```{r}
+
+# populaton proportion 2000-2010
+pop_2000 <- 
+  read_excel("raw_data/pop2000_2010.xlsx") |> 
+  clean_names() |> 
+  filter(year %in% c(2005:2009),
+         stname %in% c("Massachusetts",
+                       "New York",
+                       "Pennsylvania")) |> 
+  select(stname,
+         county = ctyname, 
+         year, 
+         tot_pop, 
+         tot_male, 
+         tot_female,
+         wa_male,
+         wa_female,
+         ba_male,
+         ba_female,
+         ia_male,
+         ia_female,
+         aa_male,
+         aa_female,
+         h_male,
+         h_female) |> 
+  mutate(white_rate = (wa_male + wa_female)/tot_pop,
+         black_rate = (ba_male + ba_female)/tot_pop,
+         native_rate = (ia_male + ia_female)/tot_pop,
+         asian_islander_rate = (aa_male + aa_female)/tot_pop,
+         hispanic_rate = (h_male + h_female)/tot_pop,
+         county = str_remove(county, " County"),
+         county = str_remove_all(county, "\\.")) |> 
+  select(state = stname, 
+         county,
+         year,
+         tot_pop,
+         white_rate,
+         black_rate,
+         native_rate,
+         asian_islander_rate,
+         hispanic_rate)
+```
+
+```{r}
+#| message: false
+# populaton proportion 2010-2020
+process_population <- function(file_path) {
+  year_mapping <- c(
+    "3" = 2010,
+    "4" = 2011,
+    "5" = 2012,
+    "6" = 2013,
+    "7" = 2014,
+    "8" = 2015
+  )
+  
+  read_csv(file_path) |> 
+    clean_names() |> 
+    filter(year %in% c(3:8), agegrp == 0) |> 
+    select(
+      state = stname,
+      county = ctyname,
+      year,
+      tot_pop,
+      tot_male,
+      tot_female,
+      wa_male,
+      wa_female,
+      ba_male,
+      ba_female,
+      ia_male,
+      ia_female,
+      aa_male,
+      aa_female,
+      na_male,
+      na_female,
+      h_male,
+      h_female
+    ) |> 
+    mutate(
+      white_rate = (wa_male + wa_female) / tot_pop,
+      black_rate = (ba_male + ba_female) / tot_pop,
+      native_rate = (ia_male + ia_female) / tot_pop,
+      asian_islander_rate = (aa_male + aa_female) / tot_pop,
+      hispanic_rate = (h_male + h_female) / tot_pop,
+      county = str_remove(county, " County"),
+      county = str_remove_all(county, "\\.")
+    ) |> 
+    select(
+      state, 
+      county,
+      year,
+      tot_pop,
+      white_rate,
+      black_rate,
+      native_rate,
+      asian_islander_rate,
+      hispanic_rate
+    ) |> 
+    mutate(year = recode(as.character(year), !!!year_mapping))
+}
+
+pop_ma_2010 <- process_population("raw_data/mass_pop_2010_2020.csv")
+pop_pa_2010 <- process_population("raw_data/pa_pop_2010_2020.csv")
+pop_ny_2010 <- process_population("raw_data/ny_pop_2010_2020.csv")
+
+```
+
+```{r}
+pop_2010 <- bind_rows(pop_ma_2010, pop_ny_2010, pop_pa_2010)
+
+population <- bind_rows(pop_2000, pop_2010) |> 
+  mutate(state = recode(state,
+                        "Massachusetts" = "MA",
+                        "New York" = "NY",
+                        "Pennsylvania" = "PA"))
+```
+
+# merge datasets
+
+```{r}
+# join
+
+final_data <-
+  divorce |> 
+  full_join(gdp, join_by(county, state, year)) |> 
+  full_join(poverty, join_by(county, state, year)) |> 
+  full_join(income, join_by(county, state, year)) |> 
+  full_join(population, join_by(county, state, year)) |> 
+  full_join(education, join_by(county, state))
+
+
+final_data <-
+  final_data |> 
+  mutate(divorce_rate = total_divorce / tot_pop)
+```
+
+```{r}
+save(final_data, file = "data/final_data.RData")
+```
